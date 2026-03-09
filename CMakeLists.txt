@@ -601,3 +601,43 @@ target_link_libraries (linux-wallpaperengine PUBLIC linux-wallpaperengine-lib)
 # set some install parameters if not in debug mode
 install(DIRECTORY ${TARGET_OUTPUT_DIRECTORY}/ DESTINATION .)
 install(FILES ${TARGET_OUTPUT_DIRECTORY}/${PROJECT_NAME} PERMISSIONS OWNER_READ OWNER_WRITE WORLD_EXECUTE WORLD_READ GROUP_READ DESTINATION .)
+
+# ========================================
+# WallForge - Additional CLI Tool
+# ========================================
+find_package(SQLite3 REQUIRED)
+
+set(WALLFORGE_SOURCES
+    src/WallForge/Core/Config.cpp
+    src/WallForge/Core/WallForgeApp.cpp
+    src/WallForge/Library/LibraryDatabase.cpp
+    src/WallForge/Library/LibraryManager.cpp
+    src/WallForge/Playlist/PlaylistScheduler.cpp
+    src/WallForge/Performance/BatteryDetector.cpp
+    src/WallForge/Performance/PerformanceManager.cpp
+)
+
+add_executable(wallforge
+    src/wallforge_main.cpp
+    ${WALLFORGE_SOURCES}
+)
+
+target_include_directories(wallforge PRIVATE
+    src
+    src/External/json/include
+    ${SQLite3_INCLUDE_DIRS}
+)
+
+target_link_libraries(wallforge PRIVATE
+    ${SQLite3_LIBRARIES}
+)
+
+target_compile_features(wallforge PRIVATE cxx_std_20)
+
+set_target_properties(wallforge PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${TARGET_OUTPUT_DIRECTORY}
+)
+
+install(FILES ${TARGET_OUTPUT_DIRECTORY}/wallforge
+    PERMISSIONS OWNER_READ OWNER_WRITE WORLD_EXECUTE WORLD_READ GROUP_READ
+    DESTINATION .)
