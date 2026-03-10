@@ -7,8 +7,11 @@
 #include "WallpaperEngine/Data/Model/Project.h"
 #include "WallpaperEngine/Data/Model/Wallpaper.h"
 
+#include "WallpaperEngine/Application/ApplicationContext.h"
+
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
+#include <cmath>
 #include <sstream>
 
 using namespace WallpaperEngine::Render;
@@ -47,7 +50,13 @@ CWeb::CWeb (
     // Grant initial focus so the browser processes user interaction events
     this->m_browser->GetHost ()->SetFocus (true);
 
-    this->m_panelPaddingLeft = detectPanelPaddingLeft ();
+    // Only inject CSS panel padding in desktop mode — in windowed mode
+    // the content isn't behind the taskbar so padding would misalign elements.
+    const bool isDesktopMode = (context.getApp ().getContext ().settings.render.mode == Application::ApplicationContext::DESKTOP_BACKGROUND)
+        || (getenv ("WALLFORGE_DESKTOP_MODE") != nullptr);
+    if (isDesktopMode) {
+        this->m_panelPaddingLeft = detectPanelPaddingLeft ();
+    }
 }
 
 void CWeb::setSize (const int width, const int height) {
@@ -84,12 +93,35 @@ void CWeb::renderFrame (const glm::ivec4& viewport) {
     // ensure the virtual mouse position is up to date
     this->updateMouse (viewport);
 
-    // Inject CSS for panel offset once DOM is available
-    if (this->m_panelPaddingLeft > 0 && !this->m_cssInjected) {
+    // Inject CSS for desktop layout adjustment once DOM is available.
+    // On non-16:9 displays, ZoomFill crops the page edges. We add padding
+    // on both sides so that widgets stay within the visible area.
+    const bool isDesktopMode = (getenv ("WALLFORGE_DESKTOP_MODE") != nullptr);
+    if (isDesktopMode && !this->m_cssInjected) {
 	auto frame = this->m_browser->GetMainFrame ();
 	if (frame) {
+	    // Calculate ZoomFill horizontal crop in page (CEF) pixels.
+	    // scale = how much the CEF texture is enlarged to fill the viewport.
+	    // cropX = how many page pixels are hidden on each side.
+	    const float vpW = static_cast<float> (viewport.z);
+	    const float vpH = static_cast<float> (viewport.w);
+	    const float cW = static_cast<float> (this->getWidth ());
+	    const float cH = static_cast<float> (this->getHeight ());
+	    const float scale = std::max (vpW / cW, vpH / cH);
+	    const int cropX = (scale > 1.001f)
+		? static_cast<int> (std::ceil ((cW * scale - vpW) / (2.0f * scale)))
+		: 0;
+
+	    // panelPaddingLeft is the taskbar width in screen pixels.
+	    // Convert to page pixels: taskbar_screen / scale.
+	    const int panelInPage = (this->m_panelPaddingLeft > 0 && scale > 0.001f)
+		? static_cast<int> (std::ceil (static_cast<float> (this->m_panelPaddingLeft) / scale))
+		: 0;
+
+	    const int padLeft = cropX + panelInPage + 14;  // crop + taskbar + margin
+	    const int padRight = cropX + 14;               // crop + margin
+
 	    std::ostringstream js;
-	    int pad = this->m_panelPaddingLeft + 14; // extra margin for visual clearance
 	    js << "(function(){"
 	       << "function inject(){"
 	       << "if(!document.head){setTimeout(inject,50);return;}"
@@ -97,7 +129,9 @@ void CWeb::renderFrame (const glm::ivec4& viewport) {
 	       << "var s=document.createElement('style');"
 	       << "s.id='__wf_panel_css';"
 	       << "s.textContent='"
-	       << ".container{padding-left:" << pad << "px !important;box-sizing:border-box !important;width:100vw !important}"
+	       << ".container{padding-left:" << padLeft << "px !important;"
+	       << "padding-right:" << padRight << "px !important;"
+	       << "box-sizing:border-box !important}"
 	       << " .bottom-row{width:auto !important}"
 	       << " .top-row{width:auto !important}"
 	       << "';"
@@ -107,7 +141,8 @@ void CWeb::renderFrame (const glm::ivec4& viewport) {
 	       << "})();";
 	    frame->ExecuteJavaScript (js.str (), frame->GetURL (), 0);
 	    this->m_cssInjected = true;
-	    std::cerr << "[CWeb] Injected CSS: padding-left " << pad << "px" << std::endl;
+	    std::cerr << "[CWeb] Injected CSS: padding-left=" << padLeft << "px padding-right=" << padRight
+		      << "px (cropX=" << cropX << " panel=" << this->m_panelPaddingLeft << " scale=" << scale << ")" << std::endl;
 	}
     }
 

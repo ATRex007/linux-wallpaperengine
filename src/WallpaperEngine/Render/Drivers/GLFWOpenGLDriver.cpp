@@ -105,9 +105,13 @@ GLFWOpenGLDriver::GLFWOpenGLDriver (const char* windowTitle, ApplicationContext&
     // In desktop mode the GLFW window is minimized (Clutter.Clone shows it).
     // GLFW mouse input won't work, so switch to socket-based input that
     // receives events forwarded by the GNOME Shell extension.
-    if (context.settings.render.mode == ApplicationContext::DESKTOP_BACKGROUND) {
-	const auto fb = this->getFramebufferSize ();
-	m_socketMouseInput = std::make_unique<Input::Drivers::SocketMouseInput> (fb.x, fb.y);
+    // Desktop mode is detected via WALLFORGE_DESKTOP_MODE env var (set by WallForgeApp)
+    // or via the --screen-root CLI flag.
+    const bool isDesktopMode = (context.settings.render.mode == ApplicationContext::DESKTOP_BACKGROUND)
+	|| (getenv ("WALLFORGE_DESKTOP_MODE") != nullptr);
+    if (isDesktopMode) {
+	const auto& geom = context.settings.render.window.geometry;
+	m_socketMouseInput = std::make_unique<Input::Drivers::SocketMouseInput> (geom.z, geom.w);
 	this->getInputContext ().setMouseInput (*m_socketMouseInput);
     }
 }

@@ -398,6 +398,8 @@ int WallForgeApp::handlePlaylistCommand(int argc, char* argv[]) {
 
                 pid_t pid = fork();
                 if (pid == 0) {
+                    if (isDesktopMode)
+                        setenv("WALLFORGE_DESKTOP_MODE", "1", 1);
                     std::vector<char*> cargs;
                     for (auto& a : args) cargs.push_back(a.data());
                     cargs.push_back(nullptr);
@@ -721,6 +723,8 @@ Examples:
     pid_t pid = fork();
     if (pid == 0) {
         // Child process
+        if (hasDesktop)
+            setenv("WALLFORGE_DESKTOP_MODE", "1", 1);
         std::vector<char*> cargs;
         for (auto& a : args) {
             cargs.push_back(a.data());
@@ -822,7 +826,8 @@ void WallForgeApp::launchEngine(const std::string& wallpaperPath) {
 
     pid_t pid = fork();
     if (pid == 0) {
-        // Child process
+        // Child process - launchEngine is always desktop mode
+        setenv("WALLFORGE_DESKTOP_MODE", "1", 1);
         std::vector<char*> cargs;
         for (auto& a : args) {
             cargs.push_back(a.data());

@@ -38,5 +38,8 @@ class SocketMouseInput final : public MouseInput {
     glm::dvec2 m_position = {};
     MouseClickStatus m_leftClick = Released;
     MouseClickStatus m_rightClick = Released;
+
+    int m_debugFrameCount = 0;
+    int m_debugEventTotal = 0;
 };
 } // namespace WallpaperEngine::Input::Drivers

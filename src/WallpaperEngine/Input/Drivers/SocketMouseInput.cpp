@@ -71,7 +71,9 @@ void SocketMouseInput::update () {
     // Drain all pending datagrams, keeping only the latest state
     char buf [128];
     ssize_t n;
+    int countThisFrame = 0;
     while ((n = recv (m_fd, buf, sizeof (buf) - 1, 0)) > 0) {
+        ++countThisFrame;
         buf [n] = '\0';
 
         if (buf [0] == 'M') {
@@ -97,6 +99,15 @@ void SocketMouseInput::update () {
                     m_rightClick = status;
             }
         }
+    }
+
+    // Periodic debug: log every ~5 seconds (assuming ~60 fps → 300 frames)
+    m_debugFrameCount++;
+    if (countThisFrame > 0) m_debugEventTotal += countThisFrame;
+    if (m_debugFrameCount % 300 == 0) {
+        std::cerr << "[SocketMouseInput] frames=" << m_debugFrameCount
+                  << " totalEvents=" << m_debugEventTotal
+                  << " pos=(" << m_position.x << "," << m_position.y << ")" << std::endl;
     }
 }
 

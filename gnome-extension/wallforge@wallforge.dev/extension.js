@@ -49,11 +49,12 @@ export default class WallForgeExtension {
         // Input forwarding via Unix socket
         this._inputSocket = null;
         this._inputSocketAddr = null;
-        this._cloneEventIds = [];
+        this._inputPollId = null;
+        this._stageCaptureId = null;
     }
 
     enable() {
-        log('[WallForge] Enabling...');
+        log('[WallForge] Enabling... (v8-debug)');
 
         this._windowCreatedId = global.display.connect(
             'window-created',
@@ -141,12 +142,10 @@ export default class WallForgeExtension {
         if (!metaWindow) return false;
         const wmClass = (metaWindow.get_wm_class() || '').toLowerCase();
         const wmInstance = (metaWindow.get_wm_class_instance() || '').toLowerCase();
-        const title = (metaWindow.get_title() || '').toLowerCase();
 
         for (const cls of WALLFORGE_WM_CLASSES) {
             if (wmClass.includes(cls) || wmInstance.includes(cls)) return true;
         }
-        if (title.includes('wallpaperengine') || title.includes('wallforge')) return true;
         return false;
     }
 
@@ -402,13 +401,15 @@ export default class WallForgeExtension {
 
         try {
             const path = this._getSocketPath();
-            this._inputSocket = new Gio.Socket({
-                family: Gio.SocketFamily.UNIX,
-                type: Gio.SocketType.DATAGRAM,
-                protocol: Gio.SocketProtocol.DEFAULT,
-            });
+            // Must use Gio.Socket.new() factory — property constructor
+            // doesn't call g_socket_new() and leaves the fd uninitialized.
+            this._inputSocket = Gio.Socket.new(
+                Gio.SocketFamily.UNIX,
+                Gio.SocketType.DATAGRAM,
+                Gio.SocketProtocol.DEFAULT
+            );
             this._inputSocketAddr = Gio.UnixSocketAddress.new(path);
-            log(`[WallForge] Input socket targeting ${path}`);
+            log(`[WallForge] Input socket created OK, targeting ${path}`);
             return true;
         } catch (e) {
             log(`[WallForge] Failed to create input socket: ${e.message}`);
@@ -436,9 +437,14 @@ export default class WallForgeExtension {
             this._inputSocket.send_to(this._inputSocketAddr, bytes, null);
         } catch (e) {
             // Socket not ready yet (WallForge not started) — ignore silently
-            if (!e.message.includes('Connection refused') &&
-                !e.message.includes('No such file')) {
-                log(`[WallForge] Input send error: ${e.message}`);
+            // Match both English and Japanese locale error messages
+            const m = e.message || '';
+            if (!m.includes('Connection refused') &&
+                !m.includes('No such file') &&
+                !m.includes('そのようなファイル') &&
+                !m.includes('接続を拒否') &&
+                !m.includes('エラーが発生しました')) {
+                log(`[WallForge] Input send error: ${m}`);
             }
         }
     }
@@ -472,50 +478,116 @@ export default class WallForgeExtension {
         return [screenX, screenY];
     }
 
+    /**
+     * Check if screen coordinates (x,y) are over any visible normal window.
+     * Returns true if a window covers that point, false otherwise (desktop).
+     */
+    _isOverWindow(x, y) {
+        // Use the stacked window list — cheaper than full tab list
+        const dominated = global.display.get_tab_list(Meta.TabList.NORMAL, null);
+        for (const win of dominated) {
+            if (win.minimized) continue;
+            // Skip the WallForge engine window (it's minimized/hidden but may still appear)
+            if (this._sourceWindow && win === this._sourceWindow) continue;
+            const rect = win.get_frame_rect();
+            if (x >= rect.x && x < rect.x + rect.width &&
+                y >= rect.y && y < rect.y + rect.height) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     _connectCloneInputEvents() {
         if (!this._clone) return;
 
-        const motionId = this._clone.connect('motion-event', (_actor, event) => {
-            const [x, y] = event.get_coords();
-            const [absX, absY] = this._clone.get_transformed_position();
-            const localX = x - absX;
-            const localY = y - absY;
-            const [sx, sy] = this._cloneToScreenCoords(localX, localY);
-            this._sendInputMessage(`M ${sx.toFixed(1)} ${sy.toFixed(1)}`);
-            return Clutter.EVENT_PROPAGATE;
+        log('[WallForge] _connectCloneInputEvents called (v8-debug)');
+
+        this._lastPointerX = -1;
+        this._lastPointerY = -1;
+        this._lastButtonMask = 0;
+        this._pollDebugCount = 0;
+        this._pollSendCount = 0;
+        this._pollBlockedCount = 0;
+
+        // Poll pointer position at ~15 Hz — enough for mouse tracking
+        // without overloading the GNOME Shell main loop.
+        this._inputPollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 66, () => {
+            if (!this._clone) return GLib.SOURCE_REMOVE;
+
+            const [x, y, mods] = global.get_pointer();
+            this._pollDebugCount++;
+
+            // If over a window, skip
+            if (this._isOverWindow(x, y)) {
+                this._pollBlockedCount++;
+                this._lastPointerX = x;
+                this._lastPointerY = y;
+                // Log every ~5s (75 polls at 66ms)
+                if (this._pollDebugCount % 75 === 0) {
+                    log(`[WallForge] poll #${this._pollDebugCount} pos=${x},${y} BLOCKED (overWindow) sent=${this._pollSendCount} blocked=${this._pollBlockedCount}`);
+                }
+                return GLib.SOURCE_CONTINUE;
+            }
+
+            // Forward motion if position changed
+            if (x !== this._lastPointerX || y !== this._lastPointerY) {
+                const [sx, sy] = this._cloneToScreenCoords(
+                    x - this._clone.x,
+                    y - this._clone.y
+                );
+                this._sendInputMessage(`M ${sx.toFixed(1)} ${sy.toFixed(1)}`);
+                this._pollSendCount++;
+            }
+
+            // Log every ~5s
+            if (this._pollDebugCount % 75 === 0) {
+                log(`[WallForge] poll #${this._pollDebugCount} pos=${x},${y} DESKTOP sent=${this._pollSendCount} blocked=${this._pollBlockedCount}`);
+            }
+
+            // Check button state via mods bitmask
+            // Clutter.ModifierType: BUTTON1_MASK = 1 << 8 (256), BUTTON3_MASK = 1 << 10 (1024)
+            const btn1 = (mods & Clutter.ModifierType.BUTTON1_MASK) !== 0;
+            const btn3 = (mods & Clutter.ModifierType.BUTTON3_MASK) !== 0;
+            const wasBt1 = (this._lastButtonMask & Clutter.ModifierType.BUTTON1_MASK) !== 0;
+            const wasBt3 = (this._lastButtonMask & Clutter.ModifierType.BUTTON3_MASK) !== 0;
+
+            const [sx2, sy2] = this._cloneToScreenCoords(
+                x - this._clone.x,
+                y - this._clone.y
+            );
+
+            // Left button transitions
+            if (btn1 && !wasBt1) {
+                this._sendInputMessage(`C 0 1 ${sx2.toFixed(1)} ${sy2.toFixed(1)}`);
+            } else if (!btn1 && wasBt1) {
+                this._sendInputMessage(`C 0 0 ${sx2.toFixed(1)} ${sy2.toFixed(1)}`);
+            }
+            // Right button transitions
+            if (btn3 && !wasBt3) {
+                this._sendInputMessage(`C 1 1 ${sx2.toFixed(1)} ${sy2.toFixed(1)}`);
+            } else if (!btn3 && wasBt3) {
+                this._sendInputMessage(`C 1 0 ${sx2.toFixed(1)} ${sy2.toFixed(1)}`);
+            }
+
+            this._lastPointerX = x;
+            this._lastPointerY = y;
+            this._lastButtonMask = mods;
+
+            return GLib.SOURCE_CONTINUE;
         });
 
-        const pressId = this._clone.connect('button-press-event', (_actor, event) => {
-            const [x, y] = event.get_coords();
-            const [absX, absY] = this._clone.get_transformed_position();
-            const localX = x - absX;
-            const localY = y - absY;
-            const [sx, sy] = this._cloneToScreenCoords(localX, localY);
-            const btn = event.get_button() === Clutter.BUTTON_PRIMARY ? 0 : 1;
-            this._sendInputMessage(`C ${btn} 1 ${sx.toFixed(1)} ${sy.toFixed(1)}`);
-            return Clutter.EVENT_STOP;
-        });
-
-        const releaseId = this._clone.connect('button-release-event', (_actor, event) => {
-            const [x, y] = event.get_coords();
-            const [absX, absY] = this._clone.get_transformed_position();
-            const localX = x - absX;
-            const localY = y - absY;
-            const [sx, sy] = this._cloneToScreenCoords(localX, localY);
-            const btn = event.get_button() === Clutter.BUTTON_PRIMARY ? 0 : 1;
-            this._sendInputMessage(`C ${btn} 0 ${sx.toFixed(1)} ${sy.toFixed(1)}`);
-            return Clutter.EVENT_STOP;
-        });
-
-        this._cloneEventIds = [motionId, pressId, releaseId];
+        log('[WallForge] Polling input handler started, timer=' + this._inputPollId);
     }
 
     _disconnectCloneInputEvents() {
-        if (this._clone && this._cloneEventIds.length > 0) {
-            for (const id of this._cloneEventIds) {
-                this._clone.disconnect(id);
-            }
+        if (this._inputPollId) {
+            GLib.source_remove(this._inputPollId);
+            this._inputPollId = null;
         }
-        this._cloneEventIds = [];
+        if (this._stageCaptureId) {
+            global.stage.disconnect(this._stageCaptureId);
+            this._stageCaptureId = null;
+        }
     }
 }
