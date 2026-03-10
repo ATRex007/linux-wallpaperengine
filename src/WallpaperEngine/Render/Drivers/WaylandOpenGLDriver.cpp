@@ -1,4 +1,5 @@
 #include "WaylandOpenGLDriver.h"
+#include "GLFWOpenGLDriver.h"
 #include "VideoFactories.h"
 #include "WallpaperEngine/Application/WallpaperApplication.h"
 #include "WallpaperEngine/Logging/Log.h"
@@ -271,7 +272,14 @@ WaylandOpenGLDriver::WaylandOpenGLDriver (ApplicationContext& context, Wallpaper
 
     if (!m_waylandContext.compositor || !m_waylandContext.shm || !m_waylandContext.layerShell
 	|| this->m_screens.empty ()) {
-	sLog.exception ("Failed to bind to required interfaces");
+	// Clean up partial Wayland state before throwing
+	if (m_waylandContext.registry) wl_registry_destroy (m_waylandContext.registry);
+	if (m_waylandContext.display) wl_display_disconnect (m_waylandContext.display);
+	m_waylandContext.display = nullptr;
+	m_waylandContext.registry = nullptr;
+	// Throw directly (not sLog.exception) to avoid stderr output —
+	// the factory lambda catches this and logs a friendly fallback message.
+	throw std::runtime_error ("zwlr_layer_shell_v1 not available");
     }
 
     initEGL ();
@@ -406,7 +414,13 @@ __attribute__ ((constructor)) void registerWaylandOpenGL () {
     sVideoFactories.registerDriver (
 	ApplicationContext::DESKTOP_BACKGROUND, "wayland",
 	[] (ApplicationContext& context, WallpaperApplication& application) -> std::unique_ptr<VideoDriver> {
-	    return std::make_unique<WaylandOpenGLDriver> (context, application);
+	    try {
+		return std::make_unique<WaylandOpenGLDriver> (context, application);
+	    } catch (const std::exception& e) {
+		sLog.out ("Wayland layer-shell unavailable, falling back to GLFW window mode");
+		sLog.out ("(The GNOME Shell extension will handle desktop placement)");
+		return std::make_unique<GLFWOpenGLDriver> ("wallpaperengine", context, application);
+	    }
 	}
     );
 }

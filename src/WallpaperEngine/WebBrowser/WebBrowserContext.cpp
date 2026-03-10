@@ -50,12 +50,7 @@ WebBrowserContext::WebBrowserContext (WallpaperEngine::Application::WallpaperApp
 	this->m_wallpaperApplication.getContext ().getArgc (), this->m_wallpaperApplication.getContext ().getArgv ()
     );
 
-    // only care about app if the process is the main process
-    // we should maybe use a better lib for handling command line arguments instead
-    // or using C's version on some places and CefCommandLine on others
-    // TODO: ANOTHER THING TO TAKE CARE OF BEFORE MERGING
     const CefRefPtr<CefCommandLine> commandLine = CefCommandLine::CreateCommandLine ();
-
     commandLine->InitFromArgv (main_args.argc, main_args.argv);
 
     if (!commandLine->HasSwitch ("type")) {
@@ -64,7 +59,7 @@ WebBrowserContext::WebBrowserContext (WallpaperEngine::Application::WallpaperApp
 	this->m_browserApplication = new CEF::SubprocessApp (wallpaperApplication);
     }
 
-    // this blocks for anything not-main-thread
+    // This blocks for subprocess types; main process gets exit_code = -1
     const int exit_code = CefExecuteProcess (main_args, this->m_browserApplication, nullptr);
 
     // this is needed to kill subprocesses after they're done
@@ -76,18 +71,26 @@ WebBrowserContext::WebBrowserContext (WallpaperEngine::Application::WallpaperApp
     // Configurate Chromium
     CefSettings settings;
     std::string cache_path = (std::filesystem::temp_directory_path () / uuid::generate_uuid_v4 ()).string ();
-    // CefString(&settings.locales_dir_path) = "OffScreenCEF/godot/locales";
-    // CefString(&settings.resources_dir_path) = "OffScreenCEF/godot/";
-    // CefString(&settings.framework_dir_path) = "OffScreenCEF/godot/";
-    // CefString(&settings.cache_path) = "OffScreenCEF/godot/";
-    //  CefString(&settings.browser_subprocess_path) = "path/to/client"
+
+    // Resolve the executable directory for CEF resource paths
+    auto exe_dir = std::filesystem::canonical ("/proc/self/exe").parent_path ();
+    std::string exe_dir_str = exe_dir.string ();
+    std::string locales_dir_str = (exe_dir / "locales").string ();
+    std::string subprocess_path_str = (exe_dir / "linux-wallpaperengine").string ();
+
     cef_string_utf8_to_utf16 (cache_path.c_str (), cache_path.length (), &settings.root_cache_path);
+    cef_string_utf8_to_utf16 (exe_dir_str.c_str (), exe_dir_str.length (), &settings.resources_dir_path);
+    cef_string_utf8_to_utf16 (locales_dir_str.c_str (), locales_dir_str.length (), &settings.locales_dir_path);
+    cef_string_utf8_to_utf16 (exe_dir_str.c_str (), exe_dir_str.length (), &settings.framework_dir_path);
+    cef_string_utf8_to_utf16 (subprocess_path_str.c_str (), subprocess_path_str.length (), &settings.browser_subprocess_path);
+
     settings.windowless_rendering_enabled = true;
+    // Use WARNING level to see important CEF messages (scheme errors, audio issues)
+    // while suppressing verbose GPU/ANGLE info messages
+    settings.log_severity = LOGSEVERITY_WARNING;
 #if defined(CEF_NO_SANDBOX)
     settings.no_sandbox = true;
 #endif
-
-    // spawns two new processess
 
     if (!CefInitialize (main_args, settings, this->m_browserApplication, nullptr)) {
 	sLog.exception ("CefInitialize: failed");

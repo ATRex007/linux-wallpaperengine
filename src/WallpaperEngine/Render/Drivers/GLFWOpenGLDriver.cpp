@@ -32,6 +32,10 @@ GLFWOpenGLDriver::GLFWOpenGLDriver (const char* windowTitle, ApplicationContext&
     glfwWindowHint (GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint (GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint (GLFW_VISIBLE, GLFW_FALSE);
+    // Use EGL instead of GLX to avoid conflicts with CEF's X11/GLX initialization.
+    // CefInitialize modifies X11/GLX state which prevents GLX context creation,
+    // but EGL contexts are independent and unaffected.
+    glfwWindowHint (GLFW_CONTEXT_CREATION_API, GLFW_EGL_CONTEXT_API);
     // set X11-specific hints
     glfwWindowHintString (GLFW_X11_CLASS_NAME, "linux-wallpaperengine");
     glfwWindowHintString (GLFW_X11_INSTANCE_NAME, "linux-wallpaperengine");
@@ -43,11 +47,19 @@ GLFWOpenGLDriver::GLFWOpenGLDriver (const char* windowTitle, ApplicationContext&
 	glfwWindowHint (GLFW_FLOATING, GLFW_TRUE);
     }
 
+    // Wayland desktop background fallback (GNOME without layer-shell):
+    // Create an undecorated window; it will be resized to monitor resolution
+    // after context creation, in GLFWWindowOutput.
+    if (context.settings.render.mode == Application::ApplicationContext::DESKTOP_BACKGROUND) {
+	glfwWindowHint (GLFW_DECORATED, GLFW_FALSE);
+	glfwWindowHint (GLFW_RESIZABLE, GLFW_FALSE);
+    }
+
 #if !NDEBUG
     glfwWindowHint (GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
 #endif /* DEBUG */
 
-    // create window, size doesn't matter as long as we don't show it
+    // create window at the target size
     this->m_window = glfwCreateWindow (640, 480, windowTitle, nullptr, nullptr);
 
     if (this->m_window == nullptr) {
@@ -58,9 +70,20 @@ GLFWOpenGLDriver::GLFWOpenGLDriver (const char* windowTitle, ApplicationContext&
     glfwMakeContextCurrent (this->m_window);
 
     // initialize glew for rendering
+    // glewExperimental is required for EGL contexts - it makes GLEW use glGetString
+    // instead of GLX-specific extension querying.
+    glewExperimental = GL_TRUE;
     if (const GLenum result = glewInit (); result != GLEW_OK) {
-	sLog.error ("Failed to initialize GLEW: ", glewGetErrorString (result));
+	// GLEW_ERROR_NO_GLX_DISPLAY (4) is expected when using EGL context API
+	// - GL function pointers are still loaded correctly via glewExperimental.
+	if (result == 4) {
+	    sLog.debug ("GLEW: GLX display not available (expected with EGL), continuing");
+	} else {
+	    sLog.error ("Failed to initialize GLEW: ", glewGetErrorString (result));
+	}
     }
+    // Clear any GL errors set by GLEW during extension probing
+    while (glGetError () != GL_NO_ERROR) {}
 
     // setup output
     if (context.settings.render.mode == ApplicationContext::EXPLICIT_WINDOW
@@ -68,14 +91,16 @@ GLFWOpenGLDriver::GLFWOpenGLDriver (const char* windowTitle, ApplicationContext&
 	m_output = new WallpaperEngine::Render::Drivers::Output::GLFWWindowOutput (context, *this);
     }
 #ifdef ENABLE_X11
-    else {
+    else if (const char* xdg = getenv ("XDG_SESSION_TYPE"); xdg && std::string (xdg) == "x11") {
 	m_output = new WallpaperEngine::Render::Drivers::Output::X11Output (context, *this);
     }
-#else
-    else {
-	sLog.exception ("Trying to start GLFW in background mode without X11 support installed. Bailing out");
-    }
 #endif
+    else {
+	// Wayland desktop background without layer-shell (e.g. GNOME/Mutter):
+	// use a window output — the GNOME Shell extension handles desktop
+	// placement via Clutter.Clone.
+	m_output = new WallpaperEngine::Render::Drivers::Output::GLFWWindowOutput (context, *this);
+    }
 }
 
 GLFWOpenGLDriver::~GLFWOpenGLDriver () { glfwTerminate (); }

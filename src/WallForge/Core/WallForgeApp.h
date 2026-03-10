@@ -16,6 +16,8 @@
 
 #include <memory>
 #include <string>
+#include <atomic>
+#include <sys/types.h>
 
 namespace WallForge {
 
@@ -90,6 +92,16 @@ private:
     int handleRunCommand(int argc, char* argv[]);
     void printUsage();
     void printVersion();
+
+    // Engine process management
+    pid_t m_enginePid = -1;
+    void launchEngine(const std::string& wallpaperPath);
+    void stopEngine();
+    static std::atomic<bool> s_interrupted;
+
+    // Monitor/wallpaper resolution detection
+    static std::pair<int, int> detectPrimaryMonitorResolution();
+    static std::pair<int, int> detectWallpaperResolution(const std::string& wallpaperPath);
 };
 
 } // namespace WallForge

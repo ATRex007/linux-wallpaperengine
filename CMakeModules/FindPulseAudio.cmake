@@ -66,6 +66,7 @@ endif (PULSEAUDIO_INCLUDE_DIR  AND NOT  PULSEAUDIO_VERSION)
 # Use the new extended syntax of find_package_handle_standard_args(), which also handles version checking:
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(PulseAudio REQUIRED_VARS PULSEAUDIO_LIBRARY PULSEAUDIO_INCLUDE_DIR
-                                             VERSION_VAR PULSEAUDIO_VERSION )
+                                             VERSION_VAR PULSEAUDIO_VERSION
+                                             NAME_MISMATCHED)
 
 mark_as_advanced(PULSEAUDIO_INCLUDE_DIR PULSEAUDIO_LIBRARY PULSEAUDIO_MAINLOOP_LIBRARY)

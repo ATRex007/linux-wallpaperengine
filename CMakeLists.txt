@@ -107,6 +107,7 @@ if(CEF_DISTRIBUTION_TYPE AND NOT CEF_DISTRIBUTION_TYPE STREQUAL "standard")
     set(CEF_PLATFORM "${CEF_PLATFORM}_${CEF_DISTRIBUTION_TYPE}")
 endif()
 message(STATUS "Using CEF for ${CMAKE_SYSTEM_NAME} - ${CEF_PLATFORM} (${CEF_ARCH_DETECTION})")
+set(USE_SANDBOX OFF CACHE BOOL "Disable CEF sandbox" FORCE)
 include(DownloadCEF)
 DownloadCEF("${CEF_PLATFORM}" "${CEF_VERSION}" "${CMAKE_CURRENT_BINARY_DIR}/cef")
 
@@ -541,6 +542,7 @@ endif()
 
 target_compile_definitions(linux-wallpaperengine-lib PUBLIC ERRORONLY=${ERRORONLY})
 target_compile_definitions(linux-wallpaperengine-lib PUBLIC DEMOMODE=${DEMOMODE})
+target_compile_definitions(linux-wallpaperengine-lib PUBLIC CEF_NO_SANDBOX)
 
 if (BUILD_TESTING)
     # tests should give as much output as possible
@@ -596,7 +598,10 @@ REPLACED_SET_EXECUTABLE_TARGET_PROPERTIES(linux-wallpaperengine-lib)
 add_executable(linux-wallpaperengine
     src/main.cpp)
 
-target_link_libraries (linux-wallpaperengine PUBLIC linux-wallpaperengine-lib)
+target_link_libraries (linux-wallpaperengine PUBLIC libcef_lib linux-wallpaperengine-lib)
+# Force libcef.so into NEEDED entries despite --as-needed, so it appears BEFORE libc.so
+# in the ELF link map. This is required for CEF's dlsym(RTLD_NEXT, "close") to work.
+target_link_options(linux-wallpaperengine PRIVATE "LINKER:--no-as-needed")
 
 # set some install parameters if not in debug mode
 install(DIRECTORY ${TARGET_OUTPUT_DIRECTORY}/ DESTINATION .)

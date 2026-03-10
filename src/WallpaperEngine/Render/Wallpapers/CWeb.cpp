@@ -7,6 +7,10 @@
 #include "WallpaperEngine/Data/Model/Project.h"
 #include "WallpaperEngine/Data/Model/Wallpaper.h"
 
+#include <X11/Xlib.h>
+#include <X11/Xatom.h>
+#include <sstream>
+
 using namespace WallpaperEngine::Render;
 using namespace WallpaperEngine::Render::Wallpapers;
 
@@ -17,6 +21,10 @@ CWeb::CWeb (
     const Wallpaper& wallpaper, RenderContext& context, AudioContext& audioContext, WebBrowserContext& browserContext,
     const WallpaperState::TextureUVsScaling& scalingMode, const uint32_t& clampMode
 ) : CWallpaper (wallpaper, context, audioContext, scalingMode, clampMode), m_browserContext (browserContext) {
+    // Web wallpapers are rendered at 16:9; use ZoomFill to crop-and-fill
+    // non-16:9 viewports so there are no blank bars.
+    this->m_state.setTextureUVsStrategy (WallpaperState::TextureUVsScaling::ZoomFillUVs);
+
     // setup framebuffers
     this->setupFramebuffers ();
 
@@ -35,6 +43,11 @@ CWeb::CWeb (
 	+ "://root/" + this->getWeb ().filename;
     this->m_browser
 	= CefBrowserHost::CreateBrowserSync (window_info, this->m_client, htmlURL, browserSettings, nullptr, nullptr);
+
+    // Grant initial focus so the browser processes user interaction events
+    this->m_browser->GetHost ()->SetFocus (true);
+
+    this->m_panelPaddingLeft = detectPanelPaddingLeft ();
 }
 
 void CWeb::setSize (const int width, const int height) {
@@ -57,13 +70,47 @@ void CWeb::setSize (const int width, const int height) {
 }
 
 void CWeb::renderFrame (const glm::ivec4& viewport) {
-    // ensure the viewport matches the window size, and resize if needed
-    if (viewport.z != this->getWidth () || viewport.w != this->getHeight ()) {
-	this->setSize (viewport.z, viewport.w);
+    // Render CEF at the viewport width but with 16:9 aspect ratio.
+    // Web wallpapers are typically designed for 16:9; rendering at a non-16:9
+    // viewport (e.g. 16:10) would create blank space in the HTML layout.
+    // The ZoomFill UV scaling in CWallpaper::render then crops to fill the screen.
+    const int cefWidth = viewport.z;
+    const int cefHeight = (viewport.z * 9) / 16;
+
+    if (cefWidth != this->getWidth () || cefHeight != this->getHeight ()) {
+	this->setSize (cefWidth, cefHeight);
     }
 
     // ensure the virtual mouse position is up to date
     this->updateMouse (viewport);
+
+    // Inject CSS for panel offset once DOM is available
+    if (this->m_panelPaddingLeft > 0 && !this->m_cssInjected) {
+	auto frame = this->m_browser->GetMainFrame ();
+	if (frame) {
+	    std::ostringstream js;
+	    int pad = this->m_panelPaddingLeft + 14; // extra margin for visual clearance
+	    js << "(function(){"
+	       << "function inject(){"
+	       << "if(!document.head){setTimeout(inject,50);return;}"
+	       << "if(document.getElementById('__wf_panel_css'))return;"
+	       << "var s=document.createElement('style');"
+	       << "s.id='__wf_panel_css';"
+	       << "s.textContent='"
+	       << ".container{padding-left:" << pad << "px !important;box-sizing:border-box !important;width:100vw !important}"
+	       << " .bottom-row{width:auto !important}"
+	       << " .top-row{width:auto !important}"
+	       << "';"
+	       << "document.head.appendChild(s);"
+	       << "}"
+	       << "inject();"
+	       << "})();";
+	    frame->ExecuteJavaScript (js.str (), frame->GetURL (), 0);
+	    this->m_cssInjected = true;
+	    std::cerr << "[CWeb] Injected CSS: padding-left " << pad << "px" << std::endl;
+	}
+    }
+
     // use the scene's framebuffer by default
     glBindFramebuffer (GL_FRAMEBUFFER, this->getWallpaperFramebuffer ());
     // ensure we render over the whole framebuffer
@@ -88,11 +135,24 @@ void CWeb::updateMouse (const glm::ivec4& viewport) {
     const auto leftClick = input.leftClick ();
     const auto rightClick = input.rightClick ();
 
+    // Raw viewport-space coordinates (Y flipped from OpenGL to screen/CEF)
+    const int rawX = std::clamp (static_cast<int> (position.x - viewport.x), 0, viewport.z);
+    const int rawY = viewport.w - std::clamp (static_cast<int> (position.y - viewport.y), 0, viewport.w);
+
+    // Convert viewport coordinates to CEF coordinates, accounting for ZoomFill
+    const float cefW = static_cast<float> (this->getWidth ());
+    const float cefH = static_cast<float> (this->getHeight ());
+    const float vpW = static_cast<float> (viewport.z);
+    const float vpH = static_cast<float> (viewport.w);
+
+    const float scale = std::max (vpW / cefW, vpH / cefH);
+    const float offsetX = (cefW * scale - vpW) / 2.0f;
+    const float offsetY = (cefH * scale - vpH) / 2.0f;
+
     CefMouseEvent evt;
-    // Set mouse current position. Maybe clamps are not needed
-    evt.x = std::clamp (static_cast<int> (position.x - viewport.x), 0, viewport.z);
-    // Convert from OpenGL coordinates (Y=0 at bottom) to CEF coordinates (Y=0 at top)
-    evt.y = viewport.w - std::clamp (static_cast<int> (position.y - viewport.y), 0, viewport.w);
+    evt.x = std::clamp (static_cast<int> ((rawX + offsetX) / scale), 0, static_cast<int> (cefW) - 1);
+    evt.y = std::clamp (static_cast<int> ((rawY + offsetY) / scale), 0, static_cast<int> (cefH) - 1);
+
     // Send mouse position to cef
     this->m_browser->GetHost ()->SendMouseMoveEvent (evt, false);
 
@@ -120,4 +180,35 @@ CWeb::~CWeb () {
     this->m_browser->GetHost ()->CloseBrowser (true);
 
     delete this->m_renderHandler;
+}
+
+int CWeb::detectPanelPaddingLeft () {
+    // Try to read _NET_WORKAREA from X11 root window to detect left panel/taskbar offset.
+    // On Wayland without XWayland this will fail gracefully and return 0.
+    Display* dpy = XOpenDisplay (nullptr);
+    if (!dpy)
+	return 0;
+
+    Atom atom = XInternAtom (dpy, "_NET_WORKAREA", True);
+    if (atom == None) {
+	XCloseDisplay (dpy);
+	return 0;
+    }
+
+    Atom actualType;
+    int actualFormat;
+    unsigned long nItems, bytesAfter;
+    unsigned char* data = nullptr;
+
+    int padding = 0;
+    if (XGetWindowProperty (dpy, DefaultRootWindow (dpy), atom, 0, 4, False, XA_CARDINAL, &actualType, &actualFormat,
+			    &nItems, &bytesAfter, &data) == Success &&
+	data && nItems >= 1) {
+	padding = static_cast<int> (reinterpret_cast<unsigned long*> (data)[0]);
+	XFree (data);
+    }
+
+    XCloseDisplay (dpy);
+    std::cerr << "[CWeb] Detected panel padding left: " << padding << "px" << std::endl;
+    return padding;
 }

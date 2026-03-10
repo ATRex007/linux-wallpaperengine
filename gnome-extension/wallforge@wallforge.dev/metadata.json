@@ -1,0 +1,8 @@
+{
+  "name": "WallForge Dynamic Wallpaper",
+  "description": "Renders dynamic wallpapers from linux-wallpaperengine as desktop backgrounds on GNOME Wayland",
+  "uuid": "wallforge@wallforge.dev",
+  "shell-version": ["46"],
+  "version": 1,
+  "url": "https://github.com/wallforge/wallforge"
+}

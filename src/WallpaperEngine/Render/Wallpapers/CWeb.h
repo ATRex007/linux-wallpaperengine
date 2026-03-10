@@ -44,6 +44,7 @@ protected:
     friend class CWallpaper;
 
 private:
+    static int detectPanelPaddingLeft ();
     WallpaperEngine::WebBrowser::WebBrowserContext& m_browserContext;
     CefRefPtr<CefBrowser> m_browser = nullptr;
     CefRefPtr<WallpaperEngine::WebBrowser::CEF::BrowserClient> m_client = nullptr;
@@ -54,6 +55,9 @@ private:
 
     WallpaperEngine::Input::MouseClickStatus m_leftClick = Input::Released;
     WallpaperEngine::Input::MouseClickStatus m_rightClick = Input::Released;
+
+    int m_panelPaddingLeft = 0;
+    bool m_cssInjected = false;
 
     glm::vec2 m_mousePosition = {};
     glm::vec2 m_mousePositionLast = {};

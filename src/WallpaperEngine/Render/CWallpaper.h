@@ -182,6 +182,8 @@ private:
     std::map<std::string, std::shared_ptr<const CFBO>> m_fbos = {};
     /** Audio context that is using this wallpaper */
     AudioContext& m_audioContext;
+
+protected:
     /** Current Wallpaper state */
     WallpaperState m_state;
 };

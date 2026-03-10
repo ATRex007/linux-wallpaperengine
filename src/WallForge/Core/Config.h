@@ -71,11 +71,11 @@ public:
     static std::filesystem::path getDefaultConfigPath();
     static std::filesystem::path getDefaultDataDir();
     static std::filesystem::path getDefaultDatabasePath();
+    static std::filesystem::path findSteamRoot();
 
 private:
     Config() = default;
     void initDefaults();
-    static std::filesystem::path findSteamRoot();
 
     WallForgeConfig m_config;
     std::filesystem::path m_configPath;
