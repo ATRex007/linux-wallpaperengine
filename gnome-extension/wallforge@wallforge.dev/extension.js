@@ -21,6 +21,7 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Gio from 'gi://Gio';
 
 const WALLFORGE_WM_CLASSES = [
     'linux-wallpaperengine',
@@ -45,6 +46,10 @@ export default class WallForgeExtension {
         this._surfaceContainer = null;
         this._lastGeometryKey = '';
         this._geometryUpdateTimerId = null;
+        // Input forwarding via Unix socket
+        this._inputSocket = null;
+        this._inputSocketAddr = null;
+        this._cloneEventIds = [];
     }
 
     enable() {
@@ -90,6 +95,7 @@ export default class WallForgeExtension {
         }
 
         this._detach();
+        this._closeInputSocket();
         log('[WallForge] Disabled');
     }
 
@@ -181,8 +187,11 @@ export default class WallForgeExtension {
         // Clone the full WindowActor (like Hanabi)
         this._clone = new Clutter.Clone({
             source: actor,
-            reactive: false,
+            reactive: true,
         });
+
+        // Connect input event handlers for forwarding to WallForge
+        this._connectCloneInputEvents();
 
         // Insert into background layer
         const bgGroup = Main.layoutManager._backgroundGroup;
@@ -216,6 +225,7 @@ export default class WallForgeExtension {
             GLib.source_remove(this._geometryUpdateTimerId);
             this._geometryUpdateTimerId = null;
         }
+        this._disconnectCloneInputEvents();
         this._disconnectSizeSignals();
         this._disconnectSurfaceContainerSignal();
         this._showSourceWindow();
@@ -378,5 +388,134 @@ export default class WallForgeExtension {
         }
         this._surfaceContainerSignalId = null;
         this._surfaceContainer = null;
+    }
+
+    // ---- Input forwarding via Unix Socket ----
+
+    _getSocketPath() {
+        const runtimeDir = GLib.get_user_runtime_dir();
+        return `${runtimeDir}/wallforge-input.sock`;
+    }
+
+    _ensureInputSocket() {
+        if (this._inputSocket) return true;
+
+        try {
+            const path = this._getSocketPath();
+            this._inputSocket = new Gio.Socket({
+                family: Gio.SocketFamily.UNIX,
+                type: Gio.SocketType.DATAGRAM,
+                protocol: Gio.SocketProtocol.DEFAULT,
+            });
+            this._inputSocketAddr = Gio.UnixSocketAddress.new(path);
+            log(`[WallForge] Input socket targeting ${path}`);
+            return true;
+        } catch (e) {
+            log(`[WallForge] Failed to create input socket: ${e.message}`);
+            this._inputSocket = null;
+            return false;
+        }
+    }
+
+    _closeInputSocket() {
+        if (this._inputSocket) {
+            try {
+                this._inputSocket.close();
+            } catch (_e) {
+                // ignore
+            }
+            this._inputSocket = null;
+            this._inputSocketAddr = null;
+        }
+    }
+
+    _sendInputMessage(msg) {
+        if (!this._ensureInputSocket()) return;
+        try {
+            const bytes = new TextEncoder().encode(msg);
+            this._inputSocket.send_to(this._inputSocketAddr, bytes, null);
+        } catch (e) {
+            // Socket not ready yet (WallForge not started) — ignore silently
+            if (!e.message.includes('Connection refused') &&
+                !e.message.includes('No such file')) {
+                log(`[WallForge] Input send error: ${e.message}`);
+            }
+        }
+    }
+
+    /**
+     * Convert clone-local coordinates to screen coordinates.
+     * The clone is positioned/scaled to cover the monitor, so we invert
+     * the clone's transformation.
+     */
+    _cloneToScreenCoords(cloneX, cloneY) {
+        const mon = Main.layoutManager.primaryMonitor;
+        if (!mon || !this._clone) return [cloneX, cloneY];
+
+        // clone position/size on screen
+        const [cx, cy] = [this._clone.x, this._clone.y];
+        const cw = this._clone.width;
+        const ch = this._clone.height;
+
+        // Find scale from clone's actor scale
+        const actorW = this._sourceActor ? this._sourceActor.width : cw;
+        const actorH = this._sourceActor ? this._sourceActor.height : ch;
+        const scaleX = cw / actorW;
+        const scaleY = ch / actorH;
+
+        // cloneX/cloneY are relative to clone's allocation
+        // Map to screen coordinates: the content of the actor at original size
+        // then to screen coordinates
+        const screenX = cloneX / scaleX;
+        const screenY = cloneY / scaleY;
+
+        return [screenX, screenY];
+    }
+
+    _connectCloneInputEvents() {
+        if (!this._clone) return;
+
+        const motionId = this._clone.connect('motion-event', (_actor, event) => {
+            const [x, y] = event.get_coords();
+            const [absX, absY] = this._clone.get_transformed_position();
+            const localX = x - absX;
+            const localY = y - absY;
+            const [sx, sy] = this._cloneToScreenCoords(localX, localY);
+            this._sendInputMessage(`M ${sx.toFixed(1)} ${sy.toFixed(1)}`);
+            return Clutter.EVENT_PROPAGATE;
+        });
+
+        const pressId = this._clone.connect('button-press-event', (_actor, event) => {
+            const [x, y] = event.get_coords();
+            const [absX, absY] = this._clone.get_transformed_position();
+            const localX = x - absX;
+            const localY = y - absY;
+            const [sx, sy] = this._cloneToScreenCoords(localX, localY);
+            const btn = event.get_button() === Clutter.BUTTON_PRIMARY ? 0 : 1;
+            this._sendInputMessage(`C ${btn} 1 ${sx.toFixed(1)} ${sy.toFixed(1)}`);
+            return Clutter.EVENT_STOP;
+        });
+
+        const releaseId = this._clone.connect('button-release-event', (_actor, event) => {
+            const [x, y] = event.get_coords();
+            const [absX, absY] = this._clone.get_transformed_position();
+            const localX = x - absX;
+            const localY = y - absY;
+            const [sx, sy] = this._cloneToScreenCoords(localX, localY);
+            const btn = event.get_button() === Clutter.BUTTON_PRIMARY ? 0 : 1;
+            this._sendInputMessage(`C ${btn} 0 ${sx.toFixed(1)} ${sy.toFixed(1)}`);
+            return Clutter.EVENT_STOP;
+        });
+
+        this._cloneEventIds = [motionId, pressId, releaseId];
+    }
+
+    _disconnectCloneInputEvents() {
+        if (this._clone && this._cloneEventIds.length > 0) {
+            for (const id of this._cloneEventIds) {
+                this._clone.disconnect(id);
+            }
+        }
+        this._cloneEventIds = [];
     }
 }

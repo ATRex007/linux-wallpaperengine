@@ -18,7 +18,12 @@ public:
 
     [[nodiscard]] const MouseInput& getMouseInput () const;
 
+    /**
+     * Replace the active mouse input driver (e.g. switch to socket input in desktop mode)
+     */
+    void setMouseInput (MouseInput& mouseInput);
+
 private:
-    MouseInput& m_mouse;
+    MouseInput* m_mouse;
 };
 } // namespace WallpaperEngine::Input

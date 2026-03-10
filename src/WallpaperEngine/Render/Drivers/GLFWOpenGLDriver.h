@@ -3,10 +3,12 @@
 #include "WallpaperEngine/Application/ApplicationContext.h"
 #include "WallpaperEngine/Application/WallpaperApplication.h"
 #include "WallpaperEngine/Input/Drivers/GLFWMouseInput.h"
+#include "WallpaperEngine/Input/Drivers/SocketMouseInput.h"
 #include "WallpaperEngine/Render/Drivers/Detectors/FullScreenDetector.h"
 #include "WallpaperEngine/Render/Drivers/VideoDriver.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+#include <memory>
 
 namespace WallpaperEngine::Application {
 class ApplicationContext;
@@ -38,6 +40,7 @@ public:
 private:
     ApplicationContext& m_context;
     Input::Drivers::GLFWMouseInput m_mouseInput;
+    std::unique_ptr<Input::Drivers::SocketMouseInput> m_socketMouseInput;
     Output::Output* m_output = nullptr;
     GLFWwindow* m_window = nullptr;
     uint32_t m_frameCounter = 0;

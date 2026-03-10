@@ -319,6 +319,8 @@ set(COMMON_SOURCES
     src/WallpaperEngine/Input/MouseInput.h
     src/WallpaperEngine/Input/Drivers/GLFWMouseInput.cpp
     src/WallpaperEngine/Input/Drivers/GLFWMouseInput.h
+    src/WallpaperEngine/Input/Drivers/SocketMouseInput.cpp
+    src/WallpaperEngine/Input/Drivers/SocketMouseInput.h
 
     src/WallpaperEngine/Render/Shaders/Variables/ShaderVariable.h
     src/WallpaperEngine/Render/Shaders/Variables/ShaderVariable.cpp
